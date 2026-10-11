@@ -17,7 +17,7 @@ st.markdown(
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 html, body, [class*="css"], .stApp {{ font-family: 'Manrope', sans-serif; }}
 .block-container {{ padding-top: 2rem; max-width: 1200px; }}
-h1 {{ font-weight: 800; letter-spacing: -0.02em; }}
+h1 {{ font-weight: 800; letter-spacing: -0.02em; font-size: clamp(1.7rem, 6vw, 2.4rem); }}
 h2, h3 {{ font-weight: 700; letter-spacing: -0.01em; }}
 [data-testid="stMetric"] {{ background: {PANEL}; border: 1px solid #232C42; border-radius: 12px; padding: 14px 16px; }}
 [data-testid="stMetricValue"] {{ font-variant-numeric: tabular-nums; font-weight: 700; }}
@@ -39,6 +39,18 @@ h2, h3 {{ font-weight: 700; letter-spacing: -0.01em; }}
 .news a:hover {{ color: {AMBER}; }}
 .news small {{ color: {MUTED}; }}
 .muted {{ color: {MUTED}; font-size: 0.85rem; }}
+.modebar-container {{ display: none !important; }}
+.stButton > button {{ width: 100%; }}
+@media (max-width: 640px) {{
+  .block-container {{ padding: 1rem .8rem 3rem; }}
+  [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; gap: .6rem !important; }}
+  [data-testid="stHorizontalBlock"] > [data-testid="column"],
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+    flex: 1 1 calc(50% - .6rem) !important; min-width: calc(50% - .6rem) !important; width: auto !important; }}
+  [data-testid="stMetricValue"] {{ font-size: 1.3rem; }}
+  [data-testid="stMetric"] {{ padding: 10px 12px; }}
+  .stTabs [data-baseweb="tab-list"] {{ overflow-x: auto; }}
+}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -99,6 +111,9 @@ def load_history(sym):
     d = c.diff()
     rs = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean() / (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
     df["RSI"] = 100 - 100 / (1 + rs)
+    pc = c.shift()
+    tr = pd.concat([df["High"] - df["Low"], (df["High"] - pc).abs(), (df["Low"] - pc).abs()], axis=1).max(axis=1)
+    df["ATR"] = tr.rolling(14).mean()
     ema12, ema26 = c.ewm(span=12, adjust=False).mean(), c.ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
@@ -150,7 +165,7 @@ def slice_period(df, period):
 def plotly_layout(fig, h=420):
     fig.update_layout(
         height=h, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Manrope", color="#E6EAF2"), hovermode="x unified",
+        font=dict(family="Manrope", color="#E6EAF2"), hovermode="x unified", dragmode=False,
         legend=dict(orientation="h", y=1.05, x=0),
     )
     fig.update_xaxes(gridcolor="#1E2638", showline=False)
@@ -158,30 +173,51 @@ def plotly_layout(fig, h=420):
     return fig
 
 
-# ───────────────────────── Sidebar: watchlist ─────────────────────────
-if "watch" not in st.session_state:
-    st.session_state.watch = ["RELIANCE.NS", "TCS.NS", "^NSEI"]
+# ───────────────────────── Watchlist ─────────────────────────
+def _initial_watch():
+    raw = st.query_params.get("w", "")
+    return [s for s in raw.split(",") if s] or ["RELIANCE.NS", "TCS.NS", "^NSEI"]
 
-with st.sidebar:
-    st.markdown("### Watchlist")
-    for w in list(st.session_state.watch):
-        p, ch = quick_quote(w)
-        c1, c2, c3 = st.columns([3, 3, 1])
-        c1.markdown(f"**{w.replace('.NS', '')}**")
-        if p is not None:
-            col = UP if ch >= 0 else DOWN
-            c2.markdown(f"<span style='color:{col}'>{p:,.1f}<br><small>{ch * 100:+.2f}%</small></span>", unsafe_allow_html=True)
-        if c3.button("✕", key=f"rm_{w}"):
-            st.session_state.watch.remove(w)
-            st.rerun()
-    st.caption("Add the stock you are viewing from the Overview tab.")
+
+if "watch" not in st.session_state:
+    st.session_state.watch = _initial_watch()
+st.session_state.setdefault("query", "Reliance")
+
+
+def _sync_watch():
+    st.query_params["w"] = ",".join(st.session_state.watch)
+
+
+def _open(sym):
+    st.session_state["query"] = sym
+
+
+def _remove():
+    s = st.session_state.get("rm_sel")
+    if s and s != "–" and s in st.session_state.watch:
+        st.session_state.watch.remove(s)
+        _sync_watch()
+    st.session_state["rm_sel"] = "–"
+
+
+def render_watchlist():
+    with st.expander(f"★ Watchlist ({len(st.session_state.watch)})"):
+        for w in st.session_state.watch:
+            p, ch = quick_quote(w)
+            label = w.replace(".NS", "")
+            if p is not None:
+                label = f"{'🟢' if ch >= 0 else '🔴'}  {label}   {p:,.1f}  ({ch * 100:+.2f}%)"
+            st.button(label, key=f"open_{w}", on_click=_open, args=(w,))
+        st.selectbox("Remove from watchlist", ["–"] + st.session_state.watch, key="rm_sel", on_change=_remove)
+        st.caption("Tap a share to open it. Add shares from the Overview tab. "
+                   "Bookmark this page (or Add to Home Screen) to keep your list.")
 
 # ───────────────────────── Header + inputs ─────────────────────────
 st.title("📈 Share Dashboard")
+render_watchlist()
 
-c1, c2 = st.columns([3, 2])
-query = c1.text_input("Share name / symbol", value="Reliance", help="Try: Reliance, TCS, HDFCBANK.NS, AAPL")
-period = c2.radio("Period", list(PERIOD_DAYS), index=3, horizontal=True)
+query = st.text_input("Share name / symbol", key="query", help="Try: Reliance, TCS, HDFCBANK.NS, AAPL")
+period = st.radio("Period", list(PERIOD_DAYS), index=3, horizontal=True)
 
 matches = search_symbols(query)
 labels = [f"{n.upper()} · {s}" + (f" · {e}" if e else "") for s, n, e in matches]
@@ -226,14 +262,18 @@ tabs = st.tabs(["Overview", "Chart", "Fundamentals", "Financials", "Returns", "C
 with tabs[0]:
     support = df_all["Low"].tail(20).min()
     resistance = df_all["High"].tail(60).max()
-    entry, sl = last, support
+    atr = df_all["ATR"].iloc[-1]
+    entry = last
+    sl = max(support, entry - 2 * atr) if pd.notna(atr) else support
+    if sl >= entry:
+        sl = entry - 2 * atr if pd.notna(atr) else entry * 0.95
     risk = max(entry - sl, entry * 0.005)
     t1, t2 = entry + 1.5 * risk, entry + 3 * risk
 
-    top = st.columns([4, 1])
-    top[0].markdown("### 🎯 Entry / Exit")
-    if top[1].button("★ Add to watchlist") and symbol not in st.session_state.watch:
+    st.markdown("### 🎯 Entry / Exit")
+    if st.button("★ Add to watchlist") and symbol not in st.session_state.watch:
         st.session_state.watch.append(symbol)
+        _sync_watch()
         st.rerun()
 
     fig = go.Figure()
@@ -243,12 +283,13 @@ with tabs[0]:
     fig.add_trace(go.Scatter(
         x=[p[1] for p in pts], y=[0.5] * 4, mode="markers+text",
         marker=dict(size=14, color=[p[2] for p in pts]),
-        text=[f"{p[0]}<br>{p[1]:,.1f}" for p in pts], textposition="top center", hoverinfo="skip",
+        text=[f"{p[0]}<br>{p[1]:,.1f}" for p in pts], textposition=["bottom center", "top center", "bottom center", "top center"], hoverinfo="skip",
     ))
     fig.update_yaxes(visible=False, range=[0, 1])
-    fig.update_xaxes(showgrid=False, zeroline=False)
+    pad = (t2 - sl) * 0.12
+    fig.update_xaxes(showgrid=False, zeroline=False, showticklabels=False, range=[sl - pad, t2 + pad])
     fig.update_layout(showlegend=False)
-    st.plotly_chart(plotly_layout(fig, 170), use_container_width=True)
+    st.plotly_chart(plotly_layout(fig, 190), use_container_width=True)
 
     e1, e2, e3, e4 = st.columns(4)
     e1.metric("Entry", f"{entry:,.2f}")
@@ -282,10 +323,10 @@ with tabs[0]:
 
 # ───────────────────────── Chart ─────────────────────────
 with tabs[1]:
-    o1, o2, o3 = st.columns(3)
-    kind = o1.radio("Style", ["Candles", "Line"], horizontal=True)
-    smas = o2.multiselect("Averages", ["SMA20", "SMA50", "SMA200"], default=["SMA50", "SMA200"])
-    panels = o3.multiselect("Panels", ["Volume", "RSI", "MACD"], default=["Volume", "RSI"])
+    with st.expander("⚙ Chart options"):
+        kind = st.radio("Style", ["Candles", "Line"], horizontal=True)
+        smas = st.multiselect("Averages", ["SMA20", "SMA50", "SMA200"], default=["SMA50", "SMA200"])
+        panels = st.multiselect("Panels", ["Volume", "RSI", "MACD"], default=["Volume", "RSI"])
 
     rows = 1 + len(panels)
     heights = [0.55] + [0.45 / max(len(panels), 1)] * len(panels)
@@ -334,7 +375,7 @@ with tabs[2]:
     scored = [(n, v, f(v)) for n, v, f in checks if v is not None]
     if scored:
         score = round(sum(1 for *_, ok in scored if ok) / len(scored) * 100)
-        s1, s2 = st.columns([1, 2])
+        s1 = s2 = st.container()
         s1.metric("Fundamental score", f"{score} / 100")
         s1.progress(score / 100)
         s1.caption("Simple rule-based checklist. Compare within the same sector.")
